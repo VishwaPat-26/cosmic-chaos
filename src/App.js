@@ -338,7 +338,6 @@ export default function GalaxyApp() {
         px += Math.sin(elapsed / 50) * 8 * (1 - eased);
         py += Math.cos(elapsed / 44) * 6 * (1 - eased);
 
-        const angle = Math.atan2(targetPos.y - special.startY, targetPos.x - special.startX);
         drawTrail(ctx, px, py, targetPos.x, targetPos.y, special.kind);
 
         if (t >= 1) {
