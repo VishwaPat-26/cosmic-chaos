@@ -85,6 +85,40 @@ const PLANETS = [
     moons: 3,
     gradient: ["#AADDFF", "#7799CC", "#445599"],
   },
+
+  // New special planets
+  {
+    id: 7,
+    name: "Mamuni",
+    color: "#FF4B2B",
+    glow: "#FF8A00",
+    size: 34,
+    orbitRadius: 565,
+    speed: 0.0032,
+    startAngle: 1.8,
+    emoji: "😡",
+    rings: false,
+    moons: 1,
+    gradient: ["#FF7A59", "#FF4B2B", "#8B0000"],
+    special: "fire",
+    targetName: "Vishwa",
+  },
+  {
+    id: 8,
+    name: "Vishwa",
+    color: "#4FD1FF",
+    glow: "#2AA8FF",
+    size: 30,
+    orbitRadius: 635,
+    speed: 0.0026,
+    startAngle: 4.8,
+    emoji: "😎",
+    rings: false,
+    moons: 1,
+    gradient: ["#8BE9FF", "#4FD1FF", "#0A5EA8"],
+    special: "water",
+    targetName: "Mamuni",
+  },
 ];
 
 const STAR_COUNT = 280;
@@ -92,6 +126,7 @@ const NEBULA_COLORS = ["#1a0533", "#0d1a3a", "#001a2e", "#1a0a00"];
 const FLEE_RADIUS = 90;
 const FLEE_SPEED = 18;
 const FLEE_DURATION = 1800;
+const SPECIAL_DURATION = 1400;
 
 function randomBetween(a, b) {
   return a + Math.random() * (b - a);
@@ -122,6 +157,13 @@ function generateNebulae() {
   }));
 }
 
+function getOrbitPosition(p, angle, cx, cy) {
+  return {
+    x: cx + p.orbitRadius * Math.cos(angle),
+    y: cy + p.orbitRadius * 0.35 * Math.sin(angle),
+  };
+}
+
 const STARS = generateStars();
 const NEBULAE = generateNebulae();
 
@@ -132,12 +174,42 @@ export default function GalaxyApp() {
     angles: Object.fromEntries(PLANETS.map((p) => [p.id, p.startAngle])),
     planetPos: {},
     fleeing: {},
+    specialMoves: {},
     mouse: { x: -9999, y: -9999 },
     animFrame: null,
   });
 
   const [tooltip, setTooltip] = useState(null);
-  const [fleeEmoji, setFleeEmoji] = useState(null);
+  const [burstEmoji, setBurstEmoji] = useState(null);
+
+  const drawTrail = useCallback((ctx, x, y, towardX, towardY, kind) => {
+    const angle = Math.atan2(y - towardY, x - towardX);
+    const count = kind === "fire" ? 14 : 12;
+
+    for (let i = 0; i < count; i++) {
+      const t = i / count;
+      const dist = 10 + i * (kind === "fire" ? 5 : 6);
+      const wave = Math.sin(Date.now() / (kind === "fire" ? 45 : 60) + i) * (kind === "fire" ? 4 : 3);
+
+      const px = x + Math.cos(angle) * dist + Math.cos(angle + Math.PI / 2) * wave;
+      const py = y + Math.sin(angle) * dist + Math.sin(angle + Math.PI / 2) * wave;
+
+      ctx.beginPath();
+      ctx.globalAlpha = (1 - t) * (kind === "fire" ? 0.65 : 0.55);
+
+      if (kind === "fire") {
+        ctx.fillStyle = i % 2 === 0 ? "#FF6B00" : "#FFD166";
+        ctx.arc(px, py, 6 - t * 4, 0, Math.PI * 2);
+      } else {
+        ctx.fillStyle = i % 2 === 0 ? "#79D9FF" : "#C7F2FF";
+        ctx.arc(px, py, 5 - t * 3.5, 0, Math.PI * 2);
+      }
+
+      ctx.fill();
+    }
+
+    ctx.globalAlpha = 1;
+  }, []);
 
   const drawScene = useCallback(() => {
     const canvas = canvasRef.current;
@@ -152,6 +224,11 @@ export default function GalaxyApp() {
     const cx = W / 2;
     const cy = H / 2;
     const s = stateRef.current;
+
+    const basePositions = {};
+    PLANETS.forEach((p) => {
+      basePositions[p.id] = getOrbitPosition(p, s.angles[p.id], cx, cy);
+    });
 
     // Background
     ctx.clearRect(0, 0, W, H);
@@ -184,8 +261,7 @@ export default function GalaxyApp() {
     STARS.forEach((star) => {
       const twinkle =
         0.5 +
-        0.5 *
-          Math.sin(((now + star.twinkleDelay) / star.twinkleDuration) * Math.PI * 2);
+        0.5 * Math.sin(((now + star.twinkleDelay) / star.twinkleDuration) * Math.PI * 2);
 
       ctx.globalAlpha = star.opacity * (0.6 + 0.4 * twinkle);
       ctx.beginPath();
@@ -195,7 +271,7 @@ export default function GalaxyApp() {
     });
     ctx.globalAlpha = 1;
 
-    // Sun glow
+    // Sun
     const sunGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, 80);
     sunGlow.addColorStop(0, "#FFFDE0");
     sunGlow.addColorStop(0.2, "#FFE066");
@@ -207,7 +283,6 @@ export default function GalaxyApp() {
     ctx.fillStyle = sunGlow;
     ctx.fill();
 
-    // Sun core
     const core = ctx.createRadialGradient(cx - 8, cy - 8, 0, cx, cy, 36);
     core.addColorStop(0, "#FFFFFF");
     core.addColorStop(0.4, "#FFE88A");
@@ -217,7 +292,6 @@ export default function GalaxyApp() {
     ctx.fillStyle = core;
     ctx.fill();
 
-    // Sun corona pulse
     ctx.save();
     const coronaScale = 1 + 0.04 * Math.sin(now * 2);
     ctx.translate(cx, cy);
@@ -248,8 +322,92 @@ export default function GalaxyApp() {
     // Planets
     PLANETS.forEach((p) => {
       const flee = s.fleeing[p.id];
+      const special = s.specialMoves[p.id];
       let px;
       let py;
+
+      if (special) {
+        const elapsed = Date.now() - special.startTime;
+        const t = Math.min(elapsed / SPECIAL_DURATION, 1);
+        const eased = 1 - Math.pow(1 - t, 3);
+
+        const targetPos = s.planetPos[special.targetId] || basePositions[special.targetId];
+        px = special.startX + (targetPos.x - special.startX) * eased;
+        py = special.startY + (targetPos.y - special.startY) * eased;
+
+        px += Math.sin(elapsed / 50) * 8 * (1 - eased);
+        py += Math.cos(elapsed / 44) * 6 * (1 - eased);
+
+        const angle = Math.atan2(targetPos.y - special.startY, targetPos.x - special.startX);
+        drawTrail(ctx, px, py, targetPos.x, targetPos.y, special.kind);
+
+        if (t >= 1) {
+          delete s.specialMoves[p.id];
+          s.angles[p.id] = Math.atan2((py - cy) / 0.35, px - cx);
+        }
+
+        s.planetPos[p.id] = { x: px, y: py };
+
+        ctx.save();
+
+        const glow = ctx.createRadialGradient(px, py, 0, px, py, p.size * 2.8);
+        glow.addColorStop(0, p.glow + "88");
+        glow.addColorStop(1, p.glow + "00");
+        ctx.beginPath();
+        ctx.arc(px, py, p.size * 2.8, 0, Math.PI * 2);
+        ctx.fillStyle = glow;
+        ctx.fill();
+
+        const grad = ctx.createRadialGradient(
+          px - p.size * 0.3,
+          py - p.size * 0.3,
+          0,
+          px,
+          py,
+          p.size
+        );
+        grad.addColorStop(0, p.gradient[0]);
+        grad.addColorStop(0.5, p.gradient[1]);
+        grad.addColorStop(1, p.gradient[2]);
+
+        ctx.beginPath();
+        ctx.arc(px, py, p.size, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.shadowColor = p.glow;
+        ctx.shadowBlur = 20;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        ctx.globalAlpha = 0.18;
+        for (let i = 0; i < 3; i++) {
+          const sx = px + (i - 1) * p.size * 0.5;
+          const sy = py + (i % 2 === 0 ? -1 : 1) * p.size * 0.3;
+          ctx.beginPath();
+          ctx.ellipse(sx, sy, p.size * 0.4, p.size * 0.15, Math.PI / 4 + i, 0, Math.PI * 2);
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+
+        if (p.moons > 0) {
+          for (let m = 0; m < p.moons; m++) {
+            const moonAngle = now * (1.5 + m * 0.7) + m * 2.1;
+            const moonDist = p.size + 14 + m * 10;
+            const mx = px + moonDist * Math.cos(moonAngle);
+            const my = py + moonDist * 0.5 * Math.sin(moonAngle);
+            ctx.beginPath();
+            ctx.arc(mx, my, 4 + m, 0, Math.PI * 2);
+            ctx.fillStyle = "#cccccc";
+            ctx.globalAlpha = 0.7;
+            ctx.fill();
+            ctx.globalAlpha = 1;
+          }
+        }
+
+        ctx.restore();
+        return;
+      }
 
       if (flee) {
         const elapsed = Date.now() - flee.startTime;
@@ -258,12 +416,12 @@ export default function GalaxyApp() {
 
         px = flee.startX + flee.vx * eased * FLEE_SPEED * 8;
         py = flee.startY + flee.vy * eased * FLEE_SPEED * 8;
-
         px += Math.sin(elapsed / 80) * 18 * (1 - eased);
         py += Math.cos(elapsed / 60) * 12 * (1 - eased);
 
         if (t >= 1) {
           delete s.fleeing[p.id];
+          s.angles[p.id] = Math.atan2((py - cy) / 0.35, px - cx);
         }
       } else {
         s.angles[p.id] += p.speed;
@@ -326,15 +484,7 @@ export default function GalaxyApp() {
         const sx = px + (i - 1) * p.size * 0.5;
         const sy = py + (i % 2 === 0 ? -1 : 1) * p.size * 0.3;
         ctx.beginPath();
-        ctx.ellipse(
-          sx,
-          sy,
-          p.size * 0.4,
-          p.size * 0.15,
-          Math.PI / 4 + i,
-          0,
-          Math.PI * 2
-        );
+        ctx.ellipse(sx, sy, p.size * 0.4, p.size * 0.15, Math.PI / 4 + i, 0, Math.PI * 2);
         ctx.strokeStyle = "#ffffff";
         ctx.lineWidth = 2;
         ctx.stroke();
@@ -348,7 +498,6 @@ export default function GalaxyApp() {
           const moonDist = p.size + 14 + m * 10;
           const mx = px + moonDist * Math.cos(moonAngle);
           const my = py + moonDist * 0.5 * Math.sin(moonAngle);
-
           ctx.beginPath();
           ctx.arc(mx, my, 4 + m, 0, Math.PI * 2);
           ctx.fillStyle = "#cccccc";
@@ -362,7 +511,7 @@ export default function GalaxyApp() {
     });
 
     s.animFrame = requestAnimationFrame(drawScene);
-  }, []);
+  }, [drawTrail]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -418,9 +567,41 @@ export default function GalaxyApp() {
       const dy = my - pos.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
 
-      if (dist < FLEE_RADIUS && !s.fleeing[p.id]) {
-        const angle = Math.atan2(pos.y - my, pos.x - mx);
+      const targetPlanet =
+        p.name === "Mamuni"
+          ? PLANETS.find((x) => x.name === "Vishwa")
+          : p.name === "Vishwa"
+          ? PLANETS.find((x) => x.name === "Mamuni")
+          : null;
 
+      if (targetPlanet && dist < p.size + 12 && !s.specialMoves[p.id]) {
+        const targetPos =
+          s.planetPos[targetPlanet.id] ||
+          getOrbitPosition(targetPlanet, s.angles[targetPlanet.id], rect.width / 2, rect.height / 2);
+
+        s.specialMoves[p.id] = {
+          startX: pos.x,
+          startY: pos.y,
+          targetId: targetPlanet.id,
+          targetX: targetPos.x,
+          targetY: targetPos.y,
+          startTime: Date.now(),
+          kind: p.name === "Mamuni" ? "fire" : "water",
+        };
+
+        setBurstEmoji({
+          id: p.id,
+          emoji: p.name === "Mamuni" ? "🔥" : "💧",
+          x: pos.x,
+          y: pos.y,
+          name: p.name,
+        });
+
+        setTimeout(() => setBurstEmoji(null), 900);
+      }
+
+      if (!targetPlanet && dist < FLEE_RADIUS && !s.fleeing[p.id]) {
+        const angle = Math.atan2(pos.y - my, pos.x - mx);
         s.fleeing[p.id] = {
           startX: pos.x,
           startY: pos.y,
@@ -429,7 +610,7 @@ export default function GalaxyApp() {
           startTime: Date.now(),
         };
 
-        setFleeEmoji({
+        setBurstEmoji({
           id: p.id,
           emoji: p.emoji,
           x: pos.x,
@@ -437,7 +618,7 @@ export default function GalaxyApp() {
           name: p.name,
         });
 
-        setTimeout(() => setFleeEmoji(null), 900);
+        setTimeout(() => setBurstEmoji(null), 900);
       }
 
       if (dist < p.size + 10) {
@@ -553,6 +734,8 @@ export default function GalaxyApp() {
               }}
             />
             {p.name.toUpperCase()}
+            {p.name === "Mamuni" ? "  — ANGRY" : ""}
+            {p.name === "Vishwa" ? "  — COOL" : ""}
           </div>
         ))}
       </div>
@@ -581,23 +764,25 @@ export default function GalaxyApp() {
             {tooltip.moons > 0
               ? `🌙 ${tooltip.moons} moon${tooltip.moons > 1 ? "s" : ""}`
               : "No moons"}
+            {tooltip.name === "Mamuni" ? " · 🔥 Fire touch" : ""}
+            {tooltip.name === "Vishwa" ? " · 💧 Water touch" : ""}
           </div>
         </div>
       )}
 
-      {fleeEmoji && (
+      {burstEmoji && (
         <div
           style={{
             position: "absolute",
-            left: fleeEmoji.x - 20,
-            top: fleeEmoji.y - 20,
+            left: burstEmoji.x - 20,
+            top: burstEmoji.y - 20,
             fontSize: 38,
             pointerEvents: "none",
             animation: "floatEmoji 0.9s ease-out forwards",
             zIndex: 10,
           }}
         >
-          {fleeEmoji.emoji}
+          {burstEmoji.emoji}
         </div>
       )}
 
